@@ -410,7 +410,7 @@ a.dl-main .t { color: var(--accent); }
   <section class="panel" id="panel-sug" hidden></section>
 </div>
 
-<div class="dock" id="dock"><div class="in dock2"><button type="button" class="add" id="add" disabled>+ Añadir tarea</button><button type="button" class="add alt" id="add-cat" disabled>+ Categoría</button></div></div>
+<div class="dock" id="dock"><div class="in dock2"><button type="button" class="add" id="add" disabled>+ Añadir tarea</button><button type="button" class="add alt" id="add-cat" disabled>+ Categoría</button><button type="button" class="add alt" id="add-link" disabled>+ Enlace</button></div></div>
 
 <div class="scrim" id="scrim" hidden></div>
 
@@ -937,6 +937,7 @@ a.dl-main .t { color: var(--accent); }
     $('open-cats').textContent = 'Categorías de ' + plantaLabel(planta);
     $('add').disabled = !ready();
     $('add-cat').disabled = !ready();
+    $('add-link').disabled = !ready();
     var all = allGastosFlat(), s = sumOf(all);
     var sm = $('sum');
     sm.textContent = '';
@@ -1381,7 +1382,7 @@ a.dl-main .t { color: var(--accent); }
   }
   function newRef() { return { title: '', url: '', imgId: '', blob: null, preview: '' }; }
 
-  function refsEditor(arr, onChange) {
+  function refsEditor(arr, onChange, onFill) {
     var box = mk('div', 'refs-ed');
     function render() {
       box.textContent = '';
@@ -1393,7 +1394,25 @@ a.dl-main .t { color: var(--accent); }
         ti.maxLength = 80; ti.value = r.title || '';
         ur.addEventListener('input', function () { r.url = ur.value; });
         ti.addEventListener('input', function () { r.title = ti.value; });
+        var lastAuto = '';
+        function tryAuto() {
+          var u = ur.value.trim();
+          if (!/^https?:\/\/\S+$/i.test(u) || u === lastAuto) return;
+          lastAuto = u; toast('Leyendo el enlace…');
+          autoFillFromUrl(u, function (info) {
+            if (!ti.value && info.title) { ti.value = info.title.slice(0, 80); ti.dispatchEvent(new Event('input')); }
+            if (onFill) onFill(info);
+            toast(info.read ? 'Rellenado desde el enlace.' : 'Esa tienda no deja leer la página: he puesto el nombre y el precio lo escribes tú.');
+          });
+        }
+        var deb = null;
+        ur.addEventListener('input', function () { clearTimeout(deb); deb = setTimeout(tryAuto, 700); });
+        ur.addEventListener('paste', function () { setTimeout(tryAuto, 50); });
+        ur.addEventListener('change', tryAuto);
+        var fillBtn = mk('button', 'btn small primary', 'Rellenar solo'); fillBtn.type = 'button';
+        fillBtn.addEventListener('click', function () { lastAuto = ''; tryAuto(); });
         card.appendChild(mini('Enlace', ur));
+        card.appendChild(fillBtn);
         card.appendChild(mini('Nombre (opcional)', ti));
         if (assets) {
           var src = r.preview || imgSrc(r.imgId, '');
@@ -1472,7 +1491,10 @@ a.dl-main .t { color: var(--accent); }
     var foot = mk('div', 'gl-f'); foot.appendChild(sub); foot.appendChild(rm);
     var qw = stepper(g, function () { upd(); });
     var rw;
-    var re = refsEditor(g.refs, function () { if (rw) rw.refresh(); });
+    var re = refsEditor(g.refs, function () { if (rw) rw.refresh(); }, function (info) {
+      if (!(c.value || '').trim() && info.title) { c.value = info.title.slice(0, 80); c.dispatchEvent(new Event('input')); }
+      if (!(g.precio > 0) && info.price != null) { p.value = String(info.price).replace('.', ','); p.dispatchEvent(new Event('input')); }
+    });
     rw = collapsible(function () { return g.refs.length ? 'Enlaces y fotos (' + g.refs.length + ')' : 'Enlace o foto'; }, re);
     var r2a = mk('div', 'g2'); r2a.appendChild(mini('Sala', s)); r2a.appendChild(qw);
     var r3 = mk('div', 'g3'); r3.appendChild(mini('Precio por unidad (€)', p)); r3.appendChild(mini('Unidad', u));
@@ -3054,6 +3076,150 @@ a.dl-main .t { color: var(--accent); }
   function cleanRef(id, d) {
     return { id: id, cat: str(d.cat), title: str(d.title), url: str(d.url), note: str(d.note), imgId: str(d.imgId), imgUrl: str(d.imgUrl), ts: num(d.ts) || 0 };
   }
+
+  /* ---------- Añadir desde enlace (v1) ---------- */
+  var KW = [
+    ['electricidad', /foco|led\b|l[aá]mpara|bombilla|enchufe|interruptor|cable|magnetot|diferencial|cuadro el|downlight|plafon|aplique|regleta|transformador|domot|mecanismo/i],
+    ['fontaneria', /grifo|ducha|plato de|lavabo|inodoro|v[aá]ter|sif[oó]n|desag|tuber|mampara|termo|ba[nñ]era|cisterna|monomando/i],
+    ['paneles', /panel/i],
+    ['pladur', /pladur|placa de yeso|perfil|montante|escayola/i],
+    ['suelos', /suelo|tarima|laminado|parquet|rodapi|baldosa|vin[ií]lico|gres/i],
+    ['climatizacion', /aire acond|split|campana|extractor|ventilaci|calefac|radiador|climatiz|inverter/i],
+    ['mobiliario', /mueble|taburete|silla|mesa|sof[aá]|armario|estanter|encimera|cocina|isla|pen[ií]nsula/i],
+    ['albanileria', /cemento|mortero|ladrillo|yeso|arena|hormig|rasilla|adhesivo|cola\b/i]
+  ];
+  function guessCat(text) {
+    for (var i = 0; i < KW.length; i++) if (KW[i][1].test(text) && catById(KW[i][0])) return KW[i][0];
+    return catById('otros') ? 'otros' : (cats[0] ? cats[0].id : '');
+  }
+  function metaOf(html, base) {
+    var doc = new DOMParser().parseFromString(html, 'text/html'), out = { title: '', price: null, img: '' };
+    function m(sel) { var e = doc.querySelector(sel); return e ? (e.getAttribute('content') || '').trim() : ''; }
+    out.title = m('meta[property="og:title"]') || (doc.title || '').trim();
+    out.img = m('meta[property="og:image"]');
+    var p = m('meta[property="product:price:amount"]') || m('meta[property="og:price:amount"]');
+    if (p) out.price = parseFloat(p.replace(',', '.'));
+    if (out.price == null || isNaN(out.price)) {
+      doc.querySelectorAll('script[type="application/ld+json"]').forEach(function (s) {
+        try {
+          (function walk(o) {
+            if (!o || typeof o !== 'object') return;
+            if (Array.isArray(o)) { o.forEach(walk); return; }
+            if (o.offers) { var of = Array.isArray(o.offers) ? o.offers[0] : o.offers; var v = of && (of.price || (of.priceSpecification && of.priceSpecification.price)); if (v && (out.price == null || isNaN(out.price))) out.price = parseFloat(String(v).replace(',', '.')); }
+            if (o.name && !out.title && o['@type'] === 'Product') out.title = String(o.name);
+            Object.keys(o).forEach(function (k) { if (typeof o[k] === 'object') walk(o[k]); });
+          })(JSON.parse(s.textContent));
+        } catch (e) {}
+      });
+    }
+    if (isNaN(out.price)) out.price = null;
+    return out;
+  }
+  function slugTitle(u) {
+    try {
+      var parts = new URL(u).pathname.split('/').filter(Boolean);
+      var s = parts.sort(function (a, b) { return b.length - a.length; })[0] || '';
+      return s.replace(/\.(html?|php)$/i, '').replace(/^\d+-/, '').replace(/[-_+]+/g, ' ').replace(/\b\d{5,}\b/g, '').trim();
+    } catch (e) { return ''; }
+  }
+  function shortName(t) {
+    t = String(t || '').split(/\s[|\u2013\u2014]\s|\s-\s/)[0].replace(/\s+/g, ' ').trim();
+    return t.split(' ').slice(0, 4).join(' ');
+  }
+  function leerEnlace(u) {
+    return SB.functions.invoke('leer-enlace', { body: { url: u } }).then(function (r) {
+      var d = r && r.data;
+      if (r.error || !d || !d.read) return null;
+      return { title: d.title || '', price: typeof d.price === 'number' ? d.price : null, img: d.img || '' };
+    }).catch(function () { return null; });
+  }
+  function autoFillFromUrl(u, cb) {
+    var ctl = new AbortController(); setTimeout(function () { ctl.abort(); }, 8000);
+    leerEnlace(u).then(function (m) {
+      var info = m || { title: '', price: null, img: '' };
+      info.read = !!m;
+      info.title = shortName(info.title || slugTitle(u));
+      cb(info);
+    });
+  }
+  function openLink() {
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(20,25,28,.55);display:flex;align-items:flex-end;justify-content:center';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#F8F9F7;width:100%;max-width:520px;max-height:92vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px';
+    var IS = 'font-size:16px;padding:11px;border:1px solid #b9c0bc;border-radius:10px;width:100%;box-sizing:border-box;background:#fff';
+    box.innerHTML = '<b style="font-size:18px">Añadir desde un enlace</b>' +
+      '<input id="lk-url" type="url" inputmode="url" autocapitalize="none" placeholder="Pega aquí el enlace del producto" style="' + IS + '">' +
+      '<button type="button" id="lk-go" class="btn primary">Rellenar solo</button>' +
+      '<div id="lk-msg" style="font-size:13px;color:#4a555a"></div>' +
+      '<div id="lk-f" hidden style="display:flex;flex-direction:column;gap:8px">' +
+      '<input id="lk-name" placeholder="Nombre" style="' + IS + '">' +
+      '<input id="lk-price" inputmode="decimal" placeholder="Precio € (con IVA)" style="' + IS + '">' +
+      '<label style="font-size:13px;color:#4a555a">Añadir a</label><select id="lk-to" style="' + IS + '"></select>' +
+      '<select id="lk-cat" style="' + IS + '"></select><select id="lk-sec" style="' + IS + '"></select>' +
+      '<button type="button" id="lk-save" class="btn primary">Guardar tarea</button></div>' +
+      '<button type="button" id="lk-x" class="btn small">Cerrar</button>';
+    ov.appendChild(box); document.body.appendChild(ov);
+    var q = function (id) { return box.querySelector('#' + id); };
+    q('lk-f').hidden = true;
+    cats.forEach(function (c) { var o = document.createElement('option'); o.value = c.id; o.textContent = c.name; q('lk-cat').appendChild(o); });
+    sections.forEach(function (s) { var o = document.createElement('option'); o.value = s.id; o.textContent = s.name; q('lk-sec').appendChild(o); });
+    q('lk-sec').value = secById(planta) ? planta : (sections[0] ? sections[0].id : '');
+    var to = q('lk-to'), o0 = document.createElement('option'); o0.value = ''; o0.textContent = '➕ Tarea nueva'; to.appendChild(o0);
+    tasks.filter(function (t) { return !t.done; }).forEach(function (t) {
+      var o = document.createElement('option'); o.value = t.id; o.textContent = t.text + ' · ' + plantaLabel(t.plantas[0]); to.appendChild(o);
+    });
+    var lastTo = ''; try { lastTo = localStorage.getItem('reforma.lastTo') || ''; } catch (e) {}
+    if (lastTo && tasks.some(function (t) { return t.id === lastTo; })) to.value = lastTo;
+    function syncTo() {
+      var t = tasks.filter(function (x) { return x.id === to.value; })[0];
+      q('lk-cat').disabled = q('lk-sec').disabled = !!t;
+      if (t) { q('lk-cat').value = catById(t.cat) ? t.cat : q('lk-cat').value; q('lk-sec').value = t.plantas[0]; }
+    }
+    to.onchange = syncTo;
+    var st = { img: '' };
+    setTimeout(function () { try { q('lk-url').focus(); } catch (e) {} }, 0);
+    function close() { document.body.removeChild(ov); }
+    q('lk-x').onclick = close;
+    q('lk-go').onclick = function () {
+      var u = q('lk-url').value.trim();
+      if (!/^https?:\/\//i.test(u)) { q('lk-msg').textContent = 'Pega un enlace completo que empiece por http.'; return; }
+      q('lk-go').disabled = true; q('lk-msg').textContent = 'Leyendo la página…';
+      var ctl = new AbortController(); setTimeout(function () { ctl.abort(); }, 8000);
+      leerEnlace(u).then(function (meta) {
+        var info = meta || { title: '', price: null, img: '' }, how = meta ? 'He leído la página.' : 'Esta tienda no deja leer la página: he sacado el nombre del enlace y el precio lo tienes que poner tú.';
+        var name = shortName(info.title || slugTitle(u));
+        var cat = guessCat(name + ' ' + u);
+        function fin(n, c) {
+          q('lk-name').value = n; q('lk-price').value = info.price != null ? String(info.price).replace('.', ',') : ''; st.img = info.img || '';
+          q('lk-cat').value = catById(c) ? c : cat;
+          q('lk-f').hidden = false; q('lk-go').disabled = false; syncTo();
+          q('lk-msg').textContent = how + ' Revisa nombre, precio y categoría antes de guardar.';
+        }
+        if (sampleFn && typeof sampleFn.json === 'function' && !(name && catById(cat) && cat !== 'otros')) {
+          sampleFn.json('Producto de reforma. Enlace: ' + u + ' Nombre: ' + name + '. Devuelve SOLO JSON {"nombre":"nombre corto en español","cat":"uno de: ' + cats.map(function (c) { return c.id; }).join(', ') + '"}', { modelTier: 'default', cache: false }).then(function (v) { fin(String(v && v.nombre || name), v && v.cat); }).catch(function () { fin(name, cat); });
+        } else fin(name, cat);
+      });
+    };
+    q('lk-save').onclick = function () {
+      var name = q('lk-name').value.trim(); if (!name) { q('lk-msg').textContent = 'Falta el nombre.'; return; }
+      var pr = parseFloat(q('lk-price').value.replace(',', '.')); if (isNaN(pr)) pr = 0;
+      var pl = q('lk-sec').value, ct = q('lk-cat').value, u = q('lk-url').value.trim();
+      var target = tasks.filter(function (x) { return x.id === q('lk-to').value; })[0];
+      var line = { sala: '', concepto: name, cant: 1, unidad: 'ud', precio: pr, ivaIncl: true, pagado: false, incluir: true, refs: [{ title: name, url: u, imgId: '' }] };
+      if (target) {
+        try { localStorage.setItem('reforma.lastTo', target.id); } catch (e) {}
+        tCol.doc(target.id).update({ gastos: target.gastos.concat([line]) }).then(function () { toast('Añadido como subgasto a «' + target.text + '».'); close(); }).catch(onWriteError);
+        return;
+      }
+      try { localStorage.setItem('reforma.lastTo', ''); } catch (e) {}
+      setPlantaCat(pl, ct, true);
+      tCol.add({ text: name, plantas: [pl], planta: pl, cat: ct, note: '', done: false, ts: Date.now(),
+        gastos: [{ sala: '', concepto: name, cant: 1, unidad: 'ud', precio: pr, ivaIncl: true, pagado: false, incluir: true, refs: [] }],
+        refs: [{ title: name, url: u, imgId: '' }], subs: [] }).then(function () { toast('Añadida a ' + plantaLabel(pl) + '.'); close(); }).catch(onWriteError);
+    };
+  }
+  $('add-link').addEventListener('click', function () { if (ready()) openLink(); });
   function fail() { nodb = true; render(); }
 
   render();
